@@ -59,6 +59,17 @@ let statsEl;             // elemento donde se escriben las estadísticas
 let btnRow;              // fila de botones (contiene runBtn)
 let selectedPokerLevels = new Set(); // conjunto de niveles seleccionados (1–4)
 
+// --- Estado para Pot Odds ---------------------------------------------------
+let potOddsData = null;               // cache de preguntas cargadas desde JSON
+let potOddsDataPromise = null;        // promesa para evitar múltiples fetch
+const selectedPotOddsOuts = new Set();// outs activos (1..20)
+const selectedPotOddsDomains = new Set(); // dominios activos (raw_percent/raw_odds)
+const selectedPotOddsStreets = new Set(); // calles seleccionadas
+let potOddsConversionActive = false;  // flag para conversiones
+const potOddsDomainButtons = [];      // referencias a botones N % / N : N
+const potOddsStreetButtons = [];      // referencias a botones de calle
+let potOddsConversionButton = null;   // botón de conversiones
+
 // Velocidades disponibles para el modo Fugues (para referencia)
 const speedMap = {
   '1H': 200,
@@ -69,6 +80,96 @@ const speedMap = {
   '6H': 10000
 };
 let currentSpeed = '1H';
+
+// -----------------------------------------------------------------------------
+// Carga y filtrado de preguntas de Pot Odds
+
+function loadPotOddsData() {
+  if (!potOddsDataPromise) {
+    potOddsDataPromise = fetch('./potOddsPreguntas.json')
+      .then(resp => resp.json())
+      .then(data => {
+        potOddsData = Array.isArray(data?.potOddsOps) ? data.potOddsOps : [];
+      })
+      .catch(() => {
+        potOddsData = [];
+      })
+      .finally(() => {
+        updateRunButtonState();
+      });
+  }
+  return potOddsDataPromise;
+}
+
+function setButtonDisabled(btn, disabled) {
+  if (!btn) return;
+  btn.disabled = disabled;
+  btn.classList.toggle('disabled', disabled);
+  if (disabled) {
+    btn.classList.remove('active');
+  }
+}
+
+function clearPotOddsSelections() {
+  if (selectedPotOddsDomains.size === 0 && !potOddsConversionActive && selectedPotOddsStreets.size === 0) return;
+  selectedPotOddsDomains.clear();
+  selectedPotOddsStreets.clear();
+  potOddsConversionActive = false;
+  potOddsDomainButtons.forEach(btn => btn.classList.remove('active'));
+  potOddsStreetButtons.forEach(btn => btn.classList.remove('active'));
+  if (potOddsConversionButton) potOddsConversionButton.classList.remove('active');
+}
+
+function updatePotOddsGating() {
+  const hasOuts = selectedPotOddsOuts.size > 0;
+  potOddsDomainButtons.forEach(btn => {
+    setButtonDisabled(btn, !hasOuts);
+    if (!hasOuts) selectedPotOddsDomains.delete(btn.dataset.domain);
+  });
+
+  const hasDomain = selectedPotOddsDomains.size > 0;
+  potOddsStreetButtons.forEach(btn => {
+    setButtonDisabled(btn, !hasDomain);
+    if (!hasDomain) selectedPotOddsStreets.delete(btn.dataset.street);
+  });
+  if (potOddsConversionButton) {
+    setButtonDisabled(potOddsConversionButton, !hasDomain);
+    if (!hasDomain) potOddsConversionActive = false;
+  }
+
+  if (!hasOuts) {
+    clearPotOddsSelections();
+  }
+
+  updateRunButtonState();
+}
+
+export function computePotOddsSelection() {
+  if (!potOddsData || potOddsData.length === 0) return [];
+  if (selectedPotOddsOuts.size === 0) return [];
+  if (selectedPotOddsDomains.size === 0 && !potOddsConversionActive) return [];
+  if (selectedPotOddsStreets.size === 0) return [];
+
+  const hasPercent = selectedPotOddsDomains.has('raw_percent');
+  const hasOdds = selectedPotOddsDomains.has('raw_odds');
+  const includePercentToOdds = potOddsConversionActive && hasPercent;
+  const includeOddsToPercent = potOddsConversionActive && hasOdds;
+
+  return potOddsData
+    .filter(item => {
+      if (!selectedPotOddsOuts.has(item.outs)) return false;
+      if (!selectedPotOddsStreets.has(item.street)) return false;
+      if (item.domain === 'raw_percent') return hasPercent;
+      if (item.domain === 'raw_odds') return hasOdds;
+      if (item.domain === 'conversion') {
+        if (item.format === 'percent_to_odds') return includePercentToOdds;
+        if (item.format === 'odds_to_percent') return includeOddsToPercent;
+        return false;
+      }
+      return false;
+    })
+    .map(({ question, answer }) => ({ question, answer }));
+}
 
 /**
  * Crea un grupo de spinner con etiqueta abreviada y envoltura de
@@ -141,6 +242,16 @@ function resetSelections() {
     const name = btn.dataset.name;
     btn.textContent = `○ ${name}`;
   });
+
+  // Reiniciar Pot Odds
+  selectedPotOddsOuts.clear();
+  selectedPotOddsDomains.clear();
+  selectedPotOddsStreets.clear();
+  potOddsConversionActive = false;
+  potOddsDomainButtons.forEach(btn => btn.classList.remove('active'));
+  potOddsStreetButtons.forEach(btn => btn.classList.remove('active'));
+  if (potOddsConversionButton) potOddsConversionButton.classList.remove('active');
+  updatePotOddsGating();
 }
 
 /**
@@ -155,7 +266,9 @@ function updateRunButtonState() {
   const opSelected = leftCol.querySelectorAll('button.numa-btn.active').length > 0;
   const numSelected = scroll.querySelectorAll('button.numa-num-btn.active').length > 0;
   const pokerSelected = selectedPokerLevels.size > 0;
-  if (opSelected && (numSelected || pokerSelected)) {
+  const potOddsAvailable = computePotOddsSelection().length > 0;
+  const hasMathOrPoker = opSelected && (numSelected || pokerSelected);
+  if (hasMathOrPoker || potOddsAvailable) {
     runBtn.disabled = false;
     runBtn.classList.remove('disabled');
   } else {
@@ -239,7 +352,16 @@ export function init(container) {
   // Limpiar y preparar variables de estado
   speedButtons.length = 0;
   selectedPokerLevels.clear();
+  selectedPotOddsOuts.clear();
+  selectedPotOddsDomains.clear();
+  selectedPotOddsStreets.clear();
+  potOddsConversionActive = false;
+  potOddsDomainButtons.length = 0;
+  potOddsStreetButtons.length = 0;
+  potOddsConversionButton = null;
   container.innerHTML = '';
+
+  loadPotOddsData();
 
   // Crear la pantalla tipo terminal que envolverá la configuración y
   // posteriormente los ejercicios
@@ -448,6 +570,98 @@ export function init(container) {
     if (el) el.addEventListener('input', validateSpinners);
   });
 
+  // ----- Pot Odds: selección de outs y filtros -----
+  const potOddsOutsRow = document.createElement('div');
+  potOddsOutsRow.className = 'numa-bottom';
+  potOddsOutsRow.id = 'pot-odds-outs-row';
+  term.appendChild(potOddsOutsRow);
+
+  const outsRanges = [
+    { label: '1–5', values: [1, 2, 3, 4, 5] },
+    { label: '6–10', values: [6, 7, 8, 9, 10] },
+    { label: '11–15', values: [11, 12, 13, 14, 15] },
+    { label: '16–20', values: [16, 17, 18, 19, 20] }
+  ];
+
+  outsRanges.forEach(range => {
+    const btn = document.createElement('button');
+    btn.className = 'numa-btn';
+    btn.textContent = range.label;
+    btn.addEventListener('click', () => {
+      const nowActive = !btn.classList.contains('active');
+      btn.classList.toggle('active', nowActive);
+      range.values.forEach(value => {
+        if (nowActive) selectedPotOddsOuts.add(value);
+        else selectedPotOddsOuts.delete(value);
+      });
+      updatePotOddsGating();
+    });
+    potOddsOutsRow.appendChild(btn);
+  });
+
+  const potOddsFiltersRow = document.createElement('div');
+  potOddsFiltersRow.className = 'numa-bottom';
+  potOddsFiltersRow.id = 'pot-odds-filters-row';
+  term.appendChild(potOddsFiltersRow);
+
+  const domainDefs = [
+    { label: 'N %', domain: 'raw_percent' },
+    { label: 'N : N', domain: 'raw_odds' }
+  ];
+
+  domainDefs.forEach(def => {
+    const btn = document.createElement('button');
+    btn.className = 'numa-btn';
+    btn.textContent = def.label;
+    btn.dataset.domain = def.domain;
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      const willActivate = !btn.classList.contains('active');
+      btn.classList.toggle('active', willActivate);
+      if (willActivate) selectedPotOddsDomains.add(def.domain);
+      else selectedPotOddsDomains.delete(def.domain);
+      updatePotOddsGating();
+    });
+    potOddsDomainButtons.push(btn);
+    potOddsFiltersRow.appendChild(btn);
+  });
+
+  const streetDefs = [
+    { label: 'Flop-Turn', street: 'flop_turn' },
+    { label: 'Turn-River', street: 'turn_river' },
+    { label: 'Flop-River', street: 'flop_river' }
+  ];
+
+  streetDefs.forEach(def => {
+    const btn = document.createElement('button');
+    btn.className = 'numa-btn';
+    btn.textContent = def.label;
+    btn.dataset.street = def.street;
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      const nowActive = !btn.classList.contains('active');
+      btn.classList.toggle('active', nowActive);
+      if (nowActive) selectedPotOddsStreets.add(def.street);
+      else selectedPotOddsStreets.delete(def.street);
+      updateRunButtonState();
+    });
+    potOddsStreetButtons.push(btn);
+    potOddsFiltersRow.appendChild(btn);
+  });
+
+  potOddsConversionButton = document.createElement('button');
+  potOddsConversionButton.className = 'numa-btn';
+  potOddsConversionButton.textContent = 'conv';
+  potOddsConversionButton.addEventListener('click', () => {
+    if (potOddsConversionButton.disabled) return;
+    potOddsConversionActive = !potOddsConversionActive;
+    potOddsConversionButton.classList.toggle('active', potOddsConversionActive);
+    updateRunButtonState();
+  });
+  potOddsFiltersRow.appendChild(potOddsConversionButton);
+
+  updatePotOddsGating();
+
   // ----- Estadísticas -----
   statsEl = document.createElement('div');
   statsEl.id = 'numa-stats';
@@ -492,14 +706,22 @@ export function init(container) {
       modes: modes,
       pokerOps: pokerOps
     });
+    const potOddsSeq = computePotOddsSelection();
+    const combined = [...expressions, ...potOddsSeq];
     // Iniciar la sesión
     runSession({
-      expressions,
+      expressions: combined,
       modes,
       container,
       statsElement: statsEl,
       btnRow
     });
+    if (statsEl) {
+      const total = combined.length;
+      const potCount = potOddsSeq.length;
+      const estimated = Math.ceil(total * 5);
+      statsEl.textContent = `Total: ${total} (Pot Odds: ${potCount})  Est. tiempo: ${estimated}s`;
+    }
   };
 
   // Añadir oyentes a los botones de operación y número (ya se hicieron
