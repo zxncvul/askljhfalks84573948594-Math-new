@@ -16,6 +16,8 @@ let originalSequence = [];
 let failedExercises = [];
 let idx = 0;
 
+const isObjectItem = value => value !== null && typeof value === 'object';
+
 // Utilidades matemáticas
 function calc(a, op, b) {
   switch (op) {
@@ -35,7 +37,7 @@ function shuffle(arr) {
   return arr;
 }
 
-export function renderExercises(sequence, modes) {
+export function renderExercises(items, modes) {
   // Obtener panel y terminal
   const mathPanel = document.getElementById('math-panel');
   const term      = document.getElementById('numa-terminal');
@@ -67,43 +69,56 @@ export function renderExercises(sequence, modes) {
     localStorage.setItem('reopenMath', '1');
     location.reload();
   };
-  mathPanel.appendChild(exitBtn);
+  if (mathPanel) {
+    mathPanel.appendChild(exitBtn);
+  }
 
-  // Modos activos
-  const isMirror = modes.includes('Mirror');
-  const isFugues = modes.includes('Fugues');
-  const isRandom = modes.includes('Random');
-  const isSurges = modes.includes('Surges');
+  const activeModes = Array.isArray(modes) ? modes : [];
+  const isMirror = activeModes.includes('Mirror');
+  const isFugues = activeModes.includes('Fugues');
+  const isRandom = activeModes.includes('Random');
+  const isSurges = activeModes.includes('Surges');
 
+  const computeComplexity = expr => {
+    if (typeof expr !== 'string') return Number.POSITIVE_INFINITY;
+    const parts = expr.split(/([+\-×÷])/);
+    let value = parseFloat(parts[0]);
+    let complexity = Math.abs(value);
+    for (let i = 1; i < parts.length; i += 2) {
+      const op  = parts[i];
+      const nxt = parseFloat(parts[i + 1]);
+      value = calc(value, op, nxt);
+      if (value === null) break;
+      complexity += Math.abs(value);
+    }
+    return complexity;
+  };
 
-  // Preprocesar secuencia
-  if (isRandom) shuffle(sequence);
+  let workingSequence = Array.isArray(items) ? items.slice() : [];
+  if (isRandom) shuffle(workingSequence);
   if (isSurges) {
-    const computeComplexity = expr => {
-      const parts = expr.split(/([+\-×÷])/);
-      let value = parseFloat(parts[0]), complexity = Math.abs(value);
-      for (let i = 1; i < parts.length; i += 2) {
-        const op  = parts[i];
-        const nxt = parseFloat(parts[i+1]);
-        value = calc(value, op, nxt);
-        if (value === null) break;
-        complexity += Math.abs(value);
+    const sortedStrings = workingSequence
+      .filter(value => typeof value === 'string')
+      .sort((a, b) => computeComplexity(a) - computeComplexity(b));
+    let stringIdx = 0;
+    workingSequence = workingSequence.map(value => {
+      if (typeof value === 'string') {
+        const next = sortedStrings[stringIdx++];
+        return next;
       }
-      return complexity;
-    };
-    sequence.sort((a, b) => computeComplexity(a) - computeComplexity(b));
+      return value;
+    });
   }
 
   // Ajustes UI
-  mathPanel.style.justifyContent = 'flex-start';
+  if (mathPanel) mathPanel.style.justifyContent = 'flex-start';
   term.innerHTML = '';
   createNumericKeypad();
 
-  originalSequence = sequence.slice();        // ✅ CORRECTO
-sequence = sequence.slice();           // Copia que se irá modificando
-failedExercises = [];                       // Limpiamos errores anteriores
-idx = 0;                                    // Reseteamos índice
-
+  originalSequence = workingSequence.slice();
+  sequence = workingSequence.slice();
+  failedExercises = [];
+  idx = 0;
 
   const outer = document.createElement('div');
   Object.assign(outer.style, {
@@ -144,9 +159,6 @@ idx = 0;                                    // Reseteamos índice
   });
   outer.appendChild(exContainer);
 
-  // Mostrar ejercicios secuenciales
-  
-
   function arraysEqual(a, b) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
@@ -156,14 +168,10 @@ idx = 0;                                    // Reseteamos índice
   }
 
   function restartSession(startingSequence) {
-    // Reiniciar índices y limpiar contenedores
     idx = 0;
     failedExercises = [];
     exContainer.innerHTML = '';
     answeredList.innerHTML = '';
-    // Copiar y barajar la secuencia de inicio.  Si el nuevo orden
-    // coincide con el anterior, se rebaraja hasta 5 intentos para
-    // minimizar la probabilidad de reutilizar la misma secuencia.
     let newSeq = startingSequence.slice();
     let attempt = 0;
     do {
@@ -174,217 +182,178 @@ idx = 0;                                    // Reseteamos índice
     showNext();
   }
 
-
-
-
   function showNext() {
-  if (idx >= sequence.length) {
-    // Si hay fallos, repetirlos
-    if (failedExercises.length > 0) {
-      sequence = [...failedExercises];   // Repetimos SOLO los fallados
-      failedExercises = [];
-      idx = 0;
-      return showNext();
-    }
+    if (idx >= sequence.length) {
+      if (failedExercises.length > 0) {
+        sequence = [...failedExercises];
+        failedExercises = [];
+        idx = 0;
+        return showNext();
+      }
 
-    // Si no hay fallos pendientes → Mostrar botón de repetir
       answeredList.innerHTML = '';
-  exContainer.innerHTML = '';
+      exContainer.innerHTML = '';
 
-    const repeatBtn = document.createElement('button');
-    repeatBtn.textContent = 'Repetir';
-    repeatBtn.className = 'numa-btn';
-    repeatBtn.style.marginTop = '1em';
-    repeatBtn.onclick = () => restartSession(originalSequence);
-    exContainer.appendChild(repeatBtn);
-
-    return;
-  }
-
-  let expr = sequence[idx++];
-  if (isMirror) {
-    const parts = expr.split(/([+\-×÷])/), ops = [], vals = [];
-    parts.forEach((p, i) => (i % 2 ? ops : vals).push(p));
-    vals.reverse(); ops.reverse();
-    expr = vals.reduce((acc, v, i) => acc + (ops[i] || '') + (vals[i] || ''), vals[0]);
-  }
-
-  const jsExpr = expr.replace(/×/g, '*').replace(/÷/g, '/');
-  let correctValue;
-  try { correctValue = eval(jsExpr); } catch { correctValue = NaN; }
-  const correctStr = String(correctValue);
-
-  exContainer.innerHTML = '';
-  const questionRow = document.createElement('div');
-  questionRow.className = 'exercise-row';
-  const spacedExpr = expr.replace(/([+\-×÷])/g, ' $1 ');
-  const pregunta = document.createElement('div');
-  pregunta.className = 'question';
-
-  // 🕒 Modo Fugues (con delay personalizado)
-  if (isFugues) {
-    pregunta.textContent = `${spacedExpr} = `;
-    questionRow.appendChild(pregunta);
-    exContainer.appendChild(questionRow);
-
-    const selectedSpeed = localStorage.getItem('fuguesSpeed') || '1H';
-    const delay = speedMap[selectedSpeed] || speedMap['1H'];
-
-    setTimeout(() => {
-      pregunta.textContent = '';
-      const input = document.createElement('input');
-input.type = 'text';
-input.maxLength = correctStr.length;
-input.className = 'answer-input';
-
-// 🛑 Evita teclado móvil sin romper eventos
-input.setAttribute('readonly', 'true');
-input.addEventListener('touchstart', e => {
-  e.preventDefault();  // evita abrir el teclado
-  input.removeAttribute('readonly'); // permite escribir desde teclado web
-  input.focus();       // asegura foco
-});
-input.addEventListener('blur', () => {
-  input.setAttribute('readonly', 'true'); // vuelve a bloquear
-});
-
-      questionRow.appendChild(input);
-
-// Bloquea teclado móvil, permite teclado web personalizado
-input.setAttribute('readonly', 'true');
-input.addEventListener('touchstart', e => {
-  e.preventDefault();
-  input.removeAttribute('readonly');
-  input.focus(); // ✅ AQUÍ SÍ
-});
-input.addEventListener('blur', () => {
-  input.setAttribute('readonly', 'true');
-});
-
-attachValidation(input, spacedExpr, correctStr);
-
-    }, delay);
-    return;
-  }
-
-  // Normal
- // Modo normal
-pregunta.textContent = `${spacedExpr} = `;
-questionRow.appendChild(pregunta);
-exContainer.appendChild(questionRow);
-
-const input = document.createElement('input');
-input.type = 'text';
-input.maxLength = correctStr.length;
-input.className = 'answer-input';
-
-// 🛑 Evita teclado móvil sin romper interacción
-input.setAttribute('readonly', 'true');
-input.addEventListener('touchstart', e => {
-  e.preventDefault();                  // Evita abrir teclado móvil
-  input.removeAttribute('readonly');  // Permite escritura con teclado web
-  input.focus();                      // Asegura foco
-});
-input.addEventListener('blur', () => {
-  input.setAttribute('readonly', 'true'); // Rebloquea si se pierde el foco
-});
-
-questionRow.appendChild(input);
-
-// Bloquea teclado móvil, permite teclado web personalizado
-input.setAttribute('readonly', 'true');
-input.addEventListener('touchstart', e => {
-  e.preventDefault();
-  input.removeAttribute('readonly');
-  input.focus(); // ✅ AQUÍ SÍ
-});
-input.addEventListener('blur', () => {
-  input.setAttribute('readonly', 'true');
-});
-
-attachValidation(input, spacedExpr, correctStr);
-
-
-}
-
-  originalSequence = sequence.slice();  // Guarda copia original
-idx = 0;
-failedExercises = [];
-showNext();
-
-
-function attachValidation(inputEl, spacedExpr, correctStr) {
-  let firstTry = true;
-  let timer = null;
-
-  const maxLength = correctStr.length;
-  inputEl.removeAttribute('readonly'); // ← permitir entrada solo desde keypad web
-
-  const validate = () => {
-    clearTimeout(timer);
-    const userValue = inputEl.value.trim();
-
-    // Evitar seguir escribiendo si ya se falló
-    if (userValue.length > maxLength) {
-      inputEl.value = userValue.slice(0, maxLength);
+      const repeatBtn = document.createElement('button');
+      repeatBtn.textContent = 'Repetir';
+      repeatBtn.className = 'numa-btn';
+      repeatBtn.style.marginTop = '1em';
+      repeatBtn.onclick = () => restartSession(originalSequence);
+      exContainer.appendChild(repeatBtn);
       return;
     }
 
-    if (userValue.length === maxLength) {
-      timer = setTimeout(() => {
-        const isCorrect = userValue === correctStr;
+    const currentItem = sequence[idx++];
+    const isObject = isObjectItem(currentItem);
 
-        if (!isCorrect) {
-          const questionRow = inputEl.closest('.exercise-row');
-          if (questionRow) questionRow.style.color = '#ff0000';
+    exContainer.innerHTML = '';
+    const questionRow = document.createElement('div');
+    questionRow.className = 'exercise-row';
+    const pregunta = document.createElement('div');
+    pregunta.className = 'question';
+    questionRow.appendChild(pregunta);
+    exContainer.appendChild(questionRow);
 
-          // Agregar al historial como incorrecto (solo 1 vez)
+    let correctStr = '';
+    let recordValue = currentItem;
+    let historyFormatter = value => `${value}`;
+
+    if (!isObject) {
+      let expr = currentItem;
+      if (isMirror) {
+        const parts = expr.split(/([+\-×÷])/), ops = [], vals = [];
+        parts.forEach((p, i) => (i % 2 ? ops : vals).push(p));
+        vals.reverse();
+        ops.reverse();
+        expr = vals.reduce((acc, v, i) => acc + (ops[i] || '') + (vals[i] || ''), vals[0]);
+      }
+      const spacedExpr = expr.replace(/([+\-×÷])/g, ' $1 ');
+      const promptText = `${spacedExpr} = `;
+      pregunta.textContent = promptText;
+      const jsExpr = expr.replace(/×/g, '*').replace(/÷/g, '/');
+      let correctValue;
+      try {
+        correctValue = eval(jsExpr);
+      } catch {
+        correctValue = NaN;
+      }
+      correctStr = String(correctValue);
+      recordValue = expr;
+      historyFormatter = userValue => `${promptText}${userValue}`;
+    } else {
+      const questionText = typeof currentItem.question === 'string' ? currentItem.question : '';
+      const promptText = /\s$/.test(questionText) ? questionText : `${questionText} `;
+      pregunta.textContent = promptText;
+      correctStr = String(currentItem.answer ?? '');
+      recordValue = currentItem;
+      historyFormatter = userValue => `${promptText}${userValue}`;
+    }
+
+    const createInput = () => {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.maxLength = Math.max(correctStr.length, 1);
+      input.className = 'answer-input';
+      input.setAttribute('readonly', 'true');
+      input.addEventListener('touchstart', e => {
+        e.preventDefault();
+        input.removeAttribute('readonly');
+        input.focus();
+      });
+      input.addEventListener('blur', () => {
+        input.setAttribute('readonly', 'true');
+      });
+      questionRow.appendChild(input);
+      attachValidation({
+        inputEl: input,
+        correctAnswer: correctStr,
+        recordValue,
+        historyFormatter
+      });
+    };
+
+    if (isFugues) {
+      const selectedSpeed = localStorage.getItem('fuguesSpeed') || '1H';
+      const delay = speedMap[selectedSpeed] || speedMap['1H'];
+      setTimeout(() => {
+        pregunta.textContent = '';
+        createInput();
+      }, delay);
+      return;
+    }
+
+    createInput();
+  }
+
+  function attachValidation({ inputEl, correctAnswer, recordValue, historyFormatter }) {
+    let firstTry = true;
+    let timer = null;
+
+    const maxLength = correctAnswer.length;
+    inputEl.removeAttribute('readonly');
+
+    const validate = () => {
+      clearTimeout(timer);
+      const userValue = inputEl.value.trim();
+
+      if (userValue.length > maxLength) {
+        inputEl.value = userValue.slice(0, maxLength);
+        return;
+      }
+
+      if (userValue.length === maxLength) {
+        timer = setTimeout(() => {
+          const isCorrect = userValue === correctAnswer;
+
+          if (!isCorrect) {
+            const row = inputEl.closest('.exercise-row');
+            if (row) row.style.color = '#ff0000';
+
+            if (firstTry) {
+              failedExercises.push(recordValue);
+              const item = document.createElement('div');
+              item.className = 'answered-item incorrect';
+              item.textContent = historyFormatter(userValue);
+              answeredList.insertBefore(item, answeredList.firstChild);
+              adjustAnsweredListFadeOut();
+            }
+
+            inputEl.value = '';
+            inputEl.focus();
+            firstTry = false;
+            return;
+          }
+
           if (firstTry) {
-            failedExercises.push(spacedExpr);
-
             const item = document.createElement('div');
-            item.className = 'answered-item incorrect';
-            item.textContent = `${spacedExpr} = ${userValue}`;
+            item.className = 'answered-item correct';
+            item.textContent = historyFormatter(userValue);
             answeredList.insertBefore(item, answeredList.firstChild);
             adjustAnsweredListFadeOut();
           }
 
-          // Limpiar input
-          inputEl.value = '';
-          inputEl.focus();
-          firstTry = false;
-          return;
-        }
+          showNext();
+        }, 300);
+      }
+    };
 
-        // ✅ Correcto (solo se guarda si fue a la primera)
-        if (firstTry) {
-          const item = document.createElement('div');
-          item.className = 'answered-item correct';
-          item.textContent = `${spacedExpr} = ${userValue}`;
-          answeredList.insertBefore(item, answeredList.firstChild);
-          adjustAnsweredListFadeOut();
-        }
-
-        // Continuar
-        showNext();
-      }, 300);
-    }
-  };
-
-  inputEl.addEventListener('input', validate);
-}
-
-
-
-
+    inputEl.addEventListener('input', validate);
+  }
 
   function adjustAnsweredListFadeOut() {
     const lis = Array.from(answeredList.children);
-    while (lis.length > 10) lis.pop() && answeredList.removeChild(answeredList.lastChild);
-    const N = lis.length, minOp = 0.2, maxOp = 1.0;
+    while (lis.length > 10) {
+      lis.pop();
+      answeredList.removeChild(answeredList.lastChild);
+    }
+    const N = lis.length;
+    const minOp = 0.2;
+    const maxOp = 1.0;
     lis.forEach((node, i) => {
       const t = N === 1 ? 0 : (i / (N - 1));
       node.style.opacity = (maxOp - (maxOp - minOp) * t).toString();
     });
   }
+
+  showNext();
 }
